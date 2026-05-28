@@ -585,121 +585,214 @@ def save_repair_spec(
 # ---------------------------------------------------------------------------
 # Interpolation backends
 # ---------------------------------------------------------------------------
-
-def _load_rife():
-    rife_dir = Path.home() / ".video-repair" / "rife"
-    if not rife_dir.exists():
-        return None, None
-    try:
-        if str(rife_dir) not in sys.path:
-            sys.path.insert(0, str(rife_dir))
-        from model.RIFE_HDv3 import Model   # type: ignore
-        import torch
-        device = (
-            torch.device("mps")
-            if torch.backends.mps.is_available()
-            else torch.device("cpu")
-        )
-        model = Model()
-        model.load_model(str(rife_dir / "train_log"), -1)
-        model.eval()
-        model.device()
-        return model, device
-    except Exception as e:
-        print(f"  [rife] load failed: {e}", file=sys.stderr)
-        return None, None
+#
+# Priority:
+#   1. rife-ncnn-vulkan binary (SOTA; set up once with --setup-rife)
+#   2. DIS optical flow with ghost-detection quality gate
+#   3. Simple pixel blend (last resort — clean, no artifacts)
+#
+# The DIS "ghost" problem: forward/backward warp creates see-through double
+# exposures on fast-moving subjects. We detect this via two signals:
+#   a) Edge density ratio — ghosting doubles every edge in the frame
+#   b) Deviation from plain blend — large deviations signal warp failure
+# When either fires, we fall back to blend (slight motion-blur, no ghost).
 
 
-_rife_cache: tuple | None = None
+# --- rife-ncnn-vulkan binary -------------------------------------------------
 
-def _get_rife():
-    global _rife_cache
-    if _rife_cache is None:
-        _rife_cache = _load_rife()
-    return _rife_cache
+def _rife_ncnn_dir() -> Path:
+    return Path.home() / ".video-repair" / "rife-ncnn"
 
 
-def _interpolate_rife(img_a: np.ndarray, img_b: np.ndarray) -> np.ndarray | None:
-    model, device = _get_rife()
-    if model is None:
-        return None
-    try:
-        import torch
-        def to_t(img):
-            return (
-                torch.from_numpy(img).permute(2, 0, 1)
-                .float().div(255.0).unsqueeze(0).to(device)
-            )
-        with torch.no_grad():
-            mid = model.inference(to_t(img_a), to_t(img_b))
-        out = mid[0].permute(1, 2, 0).cpu().numpy()
-        return (out * 255.0).clip(0, 255).astype(np.uint8)
-    except Exception as e:
-        print(f"  [rife] inference failed: {e}", file=sys.stderr)
-        return None
+def _rife_ncnn_binary() -> Path | None:
+    b = _rife_ncnn_dir() / "rife-ncnn-vulkan"
+    return b if b.exists() and (b.stat().st_mode & 0o111) else None
 
 
-def _interpolate_dis(img_a: np.ndarray, img_b: np.ndarray) -> np.ndarray:
+def _rife_ncnn_model() -> str:
+    """Return name of best available RIFE model in the install dir."""
+    d = _rife_ncnn_dir()
+    for name in ("rife-v4.6", "rife-v4", "rife-v3", "rife"):
+        if (d / name).is_dir():
+            return name
+    # Fallback: first rife-* directory found
+    for item in sorted(d.iterdir()):
+        if item.is_dir() and "rife" in item.name.lower():
+            return item.name
+    return "rife-v4.6"
+
+
+_rife_ok: bool | None = None   # cached availability flag
+
+
+def _interpolate_rife_ncnn(
+    img_a: np.ndarray, img_b: np.ndarray, out_path: Path
+) -> bool:
     """
-    Motion-compensated interpolation via DIS optical flow.
-    Forward and backward warps are blended with an occlusion-confidence mask.
+    Call rife-ncnn-vulkan binary for SOTA interpolation.
+    Returns True on success. Falls back silently on failure.
     """
+    global _rife_ok
+    binary = _rife_ncnn_binary()
+    if binary is None:
+        _rife_ok = False
+        return False
+
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        a_p = tmp / "a.png"
+        b_p = tmp / "b.png"
+        out_file = tmp / "out.png"
+
+        Image.fromarray(img_a).save(str(a_p))
+        Image.fromarray(img_b).save(str(b_p))
+
+        cmd = [
+            str(binary),
+            "-0", str(a_p),
+            "-1", str(b_p),
+            "-o", str(out_file),
+            "-m", _rife_ncnn_model(),
+        ]
+        r = subprocess.run(cmd, capture_output=True)
+        if r.returncode != 0:
+            if _rife_ok is None:
+                print(f"  [rife-ncnn] failed: {r.stderr.decode()[:200]}", file=sys.stderr)
+            _rife_ok = False
+            return False
+
+        if not out_file.exists():
+            _rife_ok = False
+            return False
+
+        shutil.copy2(str(out_file), str(out_path))
+        _rife_ok = True
+        return True
+
+
+# --- DIS optical flow with ghost-detection gate ------------------------------
+
+def _dis_warp(img_a: np.ndarray, img_b: np.ndarray) -> np.ndarray:
+    """Raw DIS forward+backward warp, blended with occlusion confidence."""
     h, w = img_a.shape[:2]
     a_g = cv2.cvtColor(img_a, cv2.COLOR_RGB2GRAY)
     b_g = cv2.cvtColor(img_b, cv2.COLOR_RGB2GRAY)
     dis = cv2.DISOpticalFlow_create(cv2.DISOPTICAL_FLOW_PRESET_MEDIUM)
-    flow_ab = dis.calc(a_g, b_g, None)
-    flow_ba = dis.calc(b_g, a_g, None)
+    fwd = dis.calc(a_g, b_g, None)
+    bwd = dis.calc(b_g, a_g, None)
     gy, gx = np.mgrid[0:h, 0:w].astype(np.float32)
 
     def warp(img, flow, t=0.5):
-        mx = (gx + flow[:, :, 0] * t).astype(np.float32)
-        my = (gy + flow[:, :, 1] * t).astype(np.float32)
-        return cv2.remap(img, mx, my, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+        return cv2.remap(
+            img,
+            (gx + flow[:, :, 0] * t).astype(np.float32),
+            (gy + flow[:, :, 1] * t).astype(np.float32),
+            cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE,
+        )
 
-    wa = warp(img_a, flow_ab)
-    wb = warp(img_b, flow_ba)
+    wa = warp(img_a, fwd)
+    wb = warp(img_b, bwd)
 
-    # Forward-backward consistency → confidence mask
     consistency = np.sqrt(
-        (flow_ab[:, :, 0] + flow_ba[:, :, 0]) ** 2 +
-        (flow_ab[:, :, 1] + flow_ba[:, :, 1]) ** 2
+        (fwd[:, :, 0] + bwd[:, :, 0]) ** 2 +
+        (fwd[:, :, 1] + bwd[:, :, 1]) ** 2
     )
-    max_err = np.percentile(consistency, 95) + 1e-6
-    conf = np.clip(1.0 - consistency / max_err, 0.0, 1.0)[:, :, np.newaxis]
+    conf = np.clip(
+        1.0 - consistency / (np.percentile(consistency, 95) + 1e-6),
+        0.0, 1.0
+    )[:, :, np.newaxis]
 
-    blended = (
+    return (
         conf * 0.5 * wa.astype(np.float32) +
         conf * 0.5 * wb.astype(np.float32) +
         (1.0 - conf) * 0.5 * img_a.astype(np.float32) +
         (1.0 - conf) * 0.5 * img_b.astype(np.float32)
-    )
-    return blended.clip(0, 255).astype(np.uint8)
+    ).clip(0, 255).astype(np.uint8)
+
+
+def _ghost_score(warped: np.ndarray, img_a: np.ndarray, img_b: np.ndarray) -> float:
+    """
+    Returns 0–1: higher = more likely the DIS warp produced ghost artifacts.
+
+    Uses two signals:
+      1. Edge density ratio: ghosting creates duplicate edges, raising the
+         edge count above either input. Ratio > 1.3 is a strong ghost signal.
+      2. High-percentile deviation from simple blend: a correct warp should
+         mostly agree with a plain blend; large deviations indicate failure.
+
+    Both are evaluated at 1/4 resolution for speed.
+    """
+    scale = 4
+    h, w = img_a.shape[:2]
+    th, tw = max(1, h // scale), max(1, w // scale)
+
+    def shrink(x):
+        return cv2.resize(x, (tw, th), interpolation=cv2.INTER_AREA)
+
+    ws = shrink(warped)
+    as_ = shrink(img_a)
+    bs = shrink(img_b)
+
+    def edge_mag(img):
+        g = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY).astype(np.float32)
+        gx = cv2.Sobel(g, cv2.CV_32F, 1, 0, ksize=3)
+        gy = cv2.Sobel(g, cv2.CV_32F, 0, 1, ksize=3)
+        return float(np.mean(np.sqrt(gx ** 2 + gy ** 2)))
+
+    em_w  = edge_mag(ws)
+    em_ab = max(edge_mag(as_), edge_mag(bs)) + 1e-6
+    edge_ratio = em_w / em_ab   # > 1 means warped has more edges than inputs
+
+    blend = (as_.astype(np.float32) + bs.astype(np.float32)) / 2
+    dev = np.abs(ws.astype(np.float32) - blend)
+    p90_dev = float(np.percentile(dev, 90))   # 90th‑pct pixel diff from blend
+
+    # Normalise to 0–1 scores
+    edge_score = min(1.0, max(0.0, (edge_ratio - 1.0) / 0.5))   # 1.0→0, 1.5→1.0
+    dev_score  = min(1.0, p90_dev / 25.0)                         # 25/255 → score=1
+
+    return max(edge_score, dev_score)
 
 
 def _interpolate_blend(img_a: np.ndarray, img_b: np.ndarray) -> np.ndarray:
-    return ((img_a.astype(np.float32) + img_b.astype(np.float32)) / 2).clip(0, 255).astype(np.uint8)
+    return (
+        (img_a.astype(np.float32) + img_b.astype(np.float32)) / 2
+    ).clip(0, 255).astype(np.uint8)
 
+
+def _interpolate_dis_or_blend(
+    img_a: np.ndarray, img_b: np.ndarray
+) -> tuple[np.ndarray, str]:
+    """
+    Attempt DIS warp. If the ghost-score is high enough to indicate artifacts,
+    fall back to pixel blend. Returns (result, method_name).
+    """
+    try:
+        warped = _dis_warp(img_a, img_b)
+        score  = _ghost_score(warped, img_a, img_b)
+        if score < 0.40:
+            return warped, f"DIS(gs={score:.2f})"
+        # Ghost detected — blend is cleaner (slight motion-blur vs. double-exposure)
+        return _interpolate_blend(img_a, img_b), f"blend(dis-ghost={score:.2f})"
+    except Exception as e:
+        return _interpolate_blend(img_a, img_b), f"blend(dis-err)"
+
+
+# --- Top-level interpolator --------------------------------------------------
 
 def interpolate_frame(path_a: Path, path_b: Path, out_path: Path) -> str:
     img_a = np.array(Image.open(path_a).convert("RGB"))
     img_b = np.array(Image.open(path_b).convert("RGB"))
 
-    result = _interpolate_rife(img_a, img_b)
-    if result is not None:
-        Image.fromarray(result).save(str(out_path), "PNG")
-        return "RIFE"
+    # 1. Try RIFE (SOTA, no artifacts on fast motion)
+    if _rife_ncnn_binary() is not None:
+        if _interpolate_rife_ncnn(img_a, img_b, out_path):
+            return "RIFE"
 
-    try:
-        result = _interpolate_dis(img_a, img_b)
-        Image.fromarray(result).save(str(out_path), "PNG")
-        return "DIS"
-    except Exception as e:
-        print(f"  [dis] failed: {e}", file=sys.stderr)
-
-    result = _interpolate_blend(img_a, img_b)
+    # 2. DIS with ghost-detection gate
+    result, method = _interpolate_dis_or_blend(img_a, img_b)
     Image.fromarray(result).save(str(out_path), "PNG")
-    return "blend"
+    return method
 
 
 # ---------------------------------------------------------------------------
@@ -787,37 +880,71 @@ def assemble_video(
 
 
 # ---------------------------------------------------------------------------
-# RIFE one-time setup
+# RIFE one-time setup  (rife-ncnn-vulkan binary — no Python/CUDA/SSL deps)
 # ---------------------------------------------------------------------------
 
 def setup_rife() -> None:
-    install_dir = Path.home() / ".video-repair" / "rife"
-    install_dir.mkdir(parents=True, exist_ok=True)
+    """
+    Download and install the rife-ncnn-vulkan standalone binary.
 
-    if not (install_dir / "model").exists():
-        print("Cloning practical-RIFE...")
-        subprocess.run(
-            ["git", "clone", "--depth", "1",
-             "https://github.com/hzwer/Practical-RIFE.git", str(install_dir)],
-            check=True,
+    Uses curl (system SSL) to avoid Python SSL certificate issues on macOS.
+    The binary works on CPU (-g -1) without Vulkan/GPU drivers.
+    """
+    import platform, zipfile
+
+    ncnn_dir = _rife_ncnn_dir()
+    ncnn_dir.mkdir(parents=True, exist_ok=True)
+    binary = ncnn_dir / "rife-ncnn-vulkan"
+
+    if binary.exists():
+        print(f"rife-ncnn-vulkan already installed at {ncnn_dir}")
+        return
+
+    sys_name = platform.system()
+    if sys_name == "Darwin":
+        url = (
+            "https://github.com/nihui/rife-ncnn-vulkan/releases/download"
+            "/20221029/rife-ncnn-vulkan-20221029-macos.zip"
+        )
+    elif sys_name == "Linux":
+        url = (
+            "https://github.com/nihui/rife-ncnn-vulkan/releases/download"
+            "/20221029/rife-ncnn-vulkan-20221029-ubuntu.zip"
         )
     else:
-        print("Model code already present.")
+        sys.exit(f"Unsupported platform: {sys_name}")
 
-    weights_dir = install_dir / "train_log"
-    if weights_dir.exists() and any(weights_dir.iterdir()):
-        print("Weights already present.")
-    else:
-        import urllib.request
-        weights_dir.mkdir(exist_ok=True)
-        print("Downloading RIFE v4.6 weights (~50 MB)...")
-        base = "https://github.com/hzwer/Practical-RIFE/releases/download/model4.6/"
-        for fname in ["flownet.pkl", "contextnet.pkl", "unet.pkl"]:
-            print(f"  {fname}...", end=" ", flush=True)
-            urllib.request.urlretrieve(base + fname, weights_dir / fname)
-            print("done")
+    zip_path = ncnn_dir / "rife-ncnn-vulkan.zip"
+    print(f"Downloading rife-ncnn-vulkan (~100 MB) via curl...")
+    subprocess.run(
+        ["curl", "-L", "--progress-bar", "-o", str(zip_path), url],
+        check=True,
+    )
 
-    print(f"\nRIFE installed at {install_dir}")
+    print("Extracting...")
+    with zipfile.ZipFile(zip_path) as z:
+        z.extractall(str(ncnn_dir))
+    zip_path.unlink()
+
+    # The zip extracts to a versioned subdirectory — flatten it
+    for sub in ncnn_dir.iterdir():
+        if sub.is_dir():
+            bin_candidate = sub / "rife-ncnn-vulkan"
+            if bin_candidate.exists():
+                shutil.copy2(str(bin_candidate), str(binary))
+                binary.chmod(0o755)
+                for item in sub.iterdir():
+                    dest = ncnn_dir / item.name
+                    if not dest.exists():
+                        if item.is_dir():
+                            shutil.copytree(str(item), str(dest))
+                        else:
+                            shutil.copy2(str(item), str(dest))
+                shutil.rmtree(str(sub))
+                break
+
+    print(f"\nRIFE installed at {ncnn_dir}")
+    print("Run repair.py normally — it will use RIFE automatically.")
 
 
 # ---------------------------------------------------------------------------
@@ -907,10 +1034,10 @@ examples:
     if not video_path.exists():
         sys.exit(f"Error: {video_path} not found")
 
-    # Force backend
+    # Force backend (override RIFE check)
     if args.backend in ("dis", "blend"):
-        global _rife_cache
-        _rife_cache = (None, None)
+        global _rife_ok
+        _rife_ok = False
 
     info = get_video_info(video_path)
     fps  = args.fps if args.fps else info["fps"]
@@ -988,8 +1115,8 @@ examples:
         print(f"Trim to: {trim_to} frames")
 
     if any(r.type == "insert" for r in repairs):
-        model, _ = _get_rife()
-        print(f"Backend: {'RIFE (MPS)' if model else 'DIS optical flow'}")
+        has_rife = _rife_ncnn_binary() is not None
+        print(f"Backend: {'RIFE (ncnn)' if has_rife else 'DIS+blend (adaptive)'}")
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tmpdir = Path(tmpdir)
