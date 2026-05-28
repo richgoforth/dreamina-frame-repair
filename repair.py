@@ -87,12 +87,22 @@ def get_video_info(video_path: str | Path) -> dict:
     data = json.loads(subprocess.run(cmd, capture_output=True, text=True, check=True).stdout)
     s = data["streams"][0]
     num, den = map(int, s["r_frame_rate"].split("/"))
+
+    def _color(field: str, fallback: str) -> str:
+        v = s.get(field, "")
+        return v if v and v != "unknown" else fallback
+
     return {
         "fps": num / den,
         "width": s["width"],
         "height": s["height"],
         "nb_frames": int(s.get("nb_frames", 0)),
         "duration": float(s.get("duration", 0.0)),
+        # Color metadata — preserved onto output to prevent color shift
+        "color_primaries": _color("color_primaries", "bt709"),
+        "color_trc":       _color("color_transfer",  "bt709"),
+        "color_space":     _color("color_space",     "bt709"),
+        "color_range":     _color("color_range",     "tv"),
     }
 
 
@@ -845,12 +855,50 @@ def assemble_video(
     audio_source: str | Path,
     output_path: str | Path,
     fps: float,
+    fmt: str = "prores",
+    color_meta: dict | None = None,
 ) -> None:
+    """
+    Assemble frames into a video file.
+
+    fmt:
+      "prores"  — ProRes 422 HQ, 10-bit 4:2:2, .mov container (default)
+                  No perceptible quality loss; safe for professional post.
+      "h264"    — H.264 CRF 18, 8-bit 4:2:0, .mp4 container
+                  Use only for web/delivery; introduces generation loss.
+
+    color_meta: dict with keys color_primaries, color_trc, color_space,
+                color_range — probed from source and forwarded to avoid
+                colour-space shift in the re-encode.
+    """
     fps_num = round(fps * 1000)
     fps_den = 1000
     from math import gcd
     g = gcd(fps_num, fps_den)
     fps_str = f"{fps_num // g}/{fps_den // g}"
+
+    cm = color_meta or {}
+    cp  = cm.get("color_primaries", "bt709")
+    ct  = cm.get("color_trc",       "bt709")
+    cs  = cm.get("color_space",     "bt709")
+    cr  = cm.get("color_range",     "tv")
+    # FFmpeg -color_range accepts "tv" (limited) or "pc" (full)
+    cr_flag = "tv" if cr in ("tv", "limited", "mpeg") else "pc"
+
+    if fmt == "prores":
+        codec_flags = [
+            "-c:v", "prores_ks",
+            "-profile:v", "3",          # 422 HQ — broadcast quality
+            "-pix_fmt", "yuv422p10le",  # 10-bit 4:2:2
+            "-vendor", "apl0",          # Apple ProRes identifier
+        ]
+    else:
+        codec_flags = [
+            "-c:v", "libx264",
+            "-preset", "slow",
+            "-crf", "18",
+            "-pix_fmt", "yuv420p",
+        ]
 
     with tempfile.TemporaryDirectory() as seq_dir:
         seq_path = Path(seq_dir)
@@ -868,8 +916,11 @@ def assemble_video(
                 "-i", str(seq_path / "%08d.png"),
                 "-i", str(audio_source),
                 "-map", "0:v", "-map", "1:a",
-                "-c:v", "libx264", "-preset", "slow", "-crf", "18",
-                "-pix_fmt", "yuv420p",
+                *codec_flags,
+                "-color_primaries", cp,
+                "-color_trc",       ct,
+                "-colorspace",      cs,
+                "-color_range",     cr_flag,
                 "-r", fps_str,
                 "-c:a", "copy",
                 "-shortest",
@@ -993,7 +1044,10 @@ examples:
         """,
     )
     p.add_argument("video", nargs="?", help="Input video file")
-    p.add_argument("--output", "-o",   help="Output path (default: <input>_repaired.mp4)")
+    p.add_argument("--output", "-o",   help="Output path (default: <input>_repaired.mov)")
+    p.add_argument("--format",         choices=["prores", "h264"], default="prores",
+                   help="Output codec: prores = ProRes 422 HQ lossless-quality .mov (default); "
+                        "h264 = H.264 CRF18 .mp4 for web delivery")
     p.add_argument("--detect",         action="store_true",
                    help="Analyse video and detect frame issues")
     p.add_argument("--auto-repair",    action="store_true",
@@ -1101,9 +1155,10 @@ examples:
     if not repairs and trim_to is None:
         p.error("No repairs specified. Use --detect, --repair, --insert-after/--remove, or --trim-to.")
 
+    out_ext = ".mov" if args.format == "prores" else ".mp4"
     output_path = (
         Path(args.output).resolve() if args.output
-        else video_path.with_name(video_path.stem + "_repaired" + video_path.suffix)
+        else video_path.with_name(video_path.stem + "_repaired" + out_ext)
     )
 
     print(f"\nInput:  {video_path.name}")
@@ -1133,8 +1188,10 @@ examples:
             frames = frames[:trim_to]
             print(f"\nTrimmed {trimmed} frames → {len(frames)} ({len(frames)/fps:.3f}s)")
 
-        print(f"\nAssembling → {output_path.name}")
-        assemble_video(frames, video_path, output_path, fps)
+        codec_label = "ProRes 422 HQ" if args.format == "prores" else "H.264 CRF18"
+        print(f"\nAssembling → {output_path.name}  [{codec_label}]")
+        assemble_video(frames, video_path, output_path, fps,
+                       fmt=args.format, color_meta=info)
 
     mb = output_path.stat().st_size / 1_048_576
     print(f"Done.  {output_path}  ({mb:.1f} MB)")
