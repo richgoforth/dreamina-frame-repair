@@ -255,24 +255,49 @@
     .log::-webkit-scrollbar-track { background: transparent; }
     .log::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 2px; }
 
-    .logLine {
+    /* ---- Friendly status lines ---- */
+    .stLine {
+      display: flex;
+      align-items: center;
+      gap: 0.7rem;
+      padding: 0.32rem 0;
+      color: var(--foreground);
       animation: lineIn 0.2s var(--ease) both;
-      white-space: pre-wrap;
-      word-break: break-word;
     }
 
-    .logLine + .logLine { margin-top: 0.05rem; }
+    /* Active step: pulsing teal dot */
+    .stDot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #5fba8a;
+      flex-shrink: 0;
+      box-shadow: 0 0 8px rgba(95,186,138,0.6);
+      animation: pulse 1.1s var(--ease) infinite;
+    }
 
-    /* Line type colours */
-    .l-divider   { color: rgba(255,255,255,0.08); }
-    .l-section   { color: var(--foreground); font-weight: 400; margin-top: 0.4rem; }
-    .l-insert    { color: #5fba8a; }
-    .l-remove    { color: var(--primary); }
-    .l-done      { color: var(--primary); font-weight: 500; }
-    .l-result    { color: rgba(239,228,208,0.75); }
-    .l-assembling{ color: var(--muted); }
-    .l-info      { color: rgba(163,163,163,0.7); }
-    .l-error     { color: #e06c75; }
+    /* Completed step: dim text, dot becomes a static check */
+    .stDone { color: rgba(163,163,163,0.55); }
+    .stDone .stDot {
+      background: transparent;
+      box-shadow: none;
+      animation: none;
+      position: relative;
+    }
+    .stDone .stDot::after {
+      content: '✓';
+      position: absolute;
+      left: -2px; top: -7px;
+      color: rgba(95,186,138,0.7);
+      font-size: 0.7rem;
+    }
+
+    .stError { color: #e06c75; }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50%      { opacity: 0.35; transform: scale(0.8); }
+    }
 
     /* ---- Done State ---- */
     .doneInner {
@@ -521,7 +546,9 @@
       document.getElementById('logFilename').textContent = file.name;
       document.getElementById('log').innerHTML = '';
       document.getElementById('spinner').style.display = '';
+      curStatusEl = null; curStatusKey = null;
       show('stateProcessing');
+      setStatus('upload', 'Uploading video…');
 
       const form = new FormData();
       form.append('video', file);
@@ -532,9 +559,9 @@
         const data = await res.json();
         if (data.error) throw new Error(data.error);
         jobId = currentJobId = data.job_id;
+        setStatus('queued', 'Upload complete. Starting…');
       } catch (err) {
-        appendLine('l-error', '✕  Upload failed: ' + err.message);
-        document.getElementById('spinner').style.display = 'none';
+        showError('Upload failed: ' + err.message);
         return;
       }
 
@@ -544,11 +571,12 @@
         const msg = JSON.parse(e.data);
         if (msg.type === 'ping') return;
 
-        if (msg.type === 'log') {
-          appendLine(classify(msg.text), msg.text);
+        if (msg.type === 'status') {
+          setStatus(msg.key, msg.text);
 
         } else if (msg.type === 'done') {
           src.close();
+          finishCurrentStatus();
           document.getElementById('downloadBtn').href = '/download/' + jobId;
           document.getElementById('doneMeta').textContent =
             'ProRes 422 HQ' + (msg.size ? ' · ' + msg.size : '');
@@ -556,44 +584,61 @@
 
         } else if (msg.type === 'error') {
           src.close();
-          appendLine('l-error', '✕  ' + msg.message);
-          document.getElementById('spinner').style.display = 'none';
+          showError(msg.message);
         }
       };
 
       src.onerror = () => {
         src.close();
-        appendLine('l-error', '✕  Lost connection to server.');
-        document.getElementById('spinner').style.display = 'none';
+        showError('Lost connection to the server.');
       };
     }
 
-    // ---- Log helpers ----
-    function classify(text) {
-      const t = text.trim();
-      if (/^─+$/.test(t))                                      return 'l-divider';
-      if (/DETECTION REPORT|FRAME SKIPS|DUPLICATE FRAMES|FROZEN TAIL/.test(t)) return 'l-section';
-      if (t.includes('[insert]'))                               return 'l-insert';
-      if (t.includes('[remove]'))                               return 'l-remove';
-      if (t.startsWith('Done.'))                                return 'l-done';
-      if (t.startsWith('→') || t.endsWith(')') && t.includes('→')) return 'l-result';
-      if (t.startsWith('Assembling'))                           return 'l-assembling';
-      return 'l-info';
+    // ---- Status rendering ----
+    // Each phase is one line. Same key → update text in place; new key → the
+    // previous line gets a checkmark and a fresh line starts.
+    let curStatusEl = null, curStatusKey = null;
+
+    function setStatus(key, text) {
+      const log = document.getElementById('log');
+      if (key === curStatusKey && curStatusEl) {
+        curStatusEl.querySelector('.stText').textContent = text;
+      } else {
+        finishCurrentStatus();
+        const line = document.createElement('div');
+        line.className = 'stLine';
+        line.innerHTML = '<span class="stDot"></span><span class="stText"></span>';
+        line.querySelector('.stText').textContent = text;
+        log.appendChild(line);
+        curStatusEl = line;
+        curStatusKey = key;
+      }
+      log.scrollTop = log.scrollHeight;
     }
 
-    function appendLine(cls, text) {
-      const log  = document.getElementById('log');
+    function finishCurrentStatus() {
+      if (curStatusEl) curStatusEl.classList.add('stDone');
+      curStatusEl = null; curStatusKey = null;
+    }
+
+    function showError(text) {
+      finishCurrentStatus();
+      const log = document.getElementById('log');
       const line = document.createElement('div');
-      line.className = 'logLine ' + cls;
-      line.textContent = text;
+      line.className = 'stLine stError';
+      line.textContent = '✕  ' + text;
       log.appendChild(line);
       log.scrollTop = log.scrollHeight;
+      document.getElementById('spinner').style.display = 'none';
     }
 
     // ---- Reset ----
     document.getElementById('resetBtn').addEventListener('click', () => {
       fileInput.value = '';
       currentJobId = null;
+      curStatusEl = null; curStatusKey = null;
+      document.getElementById('log').innerHTML = '';
+      document.getElementById('spinner').style.display = '';
       show('stateUpload');
     });
   </script>

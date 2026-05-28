@@ -30,18 +30,46 @@ REPAIR_PY = Path(__file__).parent / "repair.py"
 # job_id -> {queue, workdir, input, output, filename, status}
 jobs: dict = {}
 
-# Lines we don't surface to the user (internal paths, spec file messages)
-_SUPPRESS = re.compile(r"Repair spec saved to:|Use --auto-repair|python repair\.py")
+def _translate(line: str, state: dict) -> list[dict]:
+    """
+    Turn a raw repair.py stdout line into friendly status events for the UI.
 
+    Returns a list of {"type":"status","key":...,"text":...} dicts (usually 0 or 1).
+    The `key` lets the frontend update a line in place instead of appending —
+    so the repair counter ticks up on one line rather than spamming many.
+    """
+    s = line.strip()
 
-def _clean(line: str) -> str | None:
-    """Return a user-facing version of a log line, or None to suppress it."""
-    if _SUPPRESS.search(line):
-        return None
-    # Strip full filesystem paths from the Done line
-    if line.strip().startswith("Done."):
-        return re.sub(r"\s+/\S+\s+", "  ", line).strip()
-    return line
+    if s.startswith("Detecting frame issues"):
+        return [{"type": "status", "key": "analyze", "text": "Analyzing your video…"}]
+
+    if "Computing optical flow" in s:
+        return [{"type": "status", "key": "scan",
+                 "text": "Checking every frame for dropped and duplicate frames…"}]
+
+    if s.startswith("Repairs:"):
+        m = re.search(r"Repairs:\s*(\d+)", s)
+        if m:
+            state["total"] = int(m.group(1))
+        return []
+
+    if s.startswith("Applying repairs"):
+        return [{"type": "status", "key": "repair", "text": "Repairing frames…"}]
+
+    if s.startswith("[insert]") or s.startswith("[remove]"):
+        state["done"] = state.get("done", 0) + 1
+        total = state.get("total", 0)
+        suffix = f" — {state['done']} of {total}" if total else f" — {state['done']}"
+        return [{"type": "status", "key": "repair", "text": "Repairing frames" + suffix}]
+
+    if s.startswith("Trimmed"):
+        return [{"type": "status", "key": "trim", "text": "Trimming frozen ending…"}]
+
+    if s.startswith("Assembling"):
+        return [{"type": "status", "key": "encode",
+                 "text": "Encoding final video (ProRes)… this is the slow part"}]
+
+    return []
 
 
 # ---------------------------------------------------------------------------
@@ -157,13 +185,15 @@ def _run_repair(job_id: str) -> None:
         )
 
         done_size = ""
+        last_raw = ""
+        state: dict = {}
         for raw in proc.stdout:
             line = raw.rstrip()
             if not line:
                 continue
-            clean = _clean(line)
-            if clean is not None:
-                q.put({"type": "log", "text": clean})
+            last_raw = line
+            for evt in _translate(line, state):
+                q.put(evt)
             if line.strip().startswith("Done.") and "(" in line:
                 done_size = line.split("(")[-1].rstrip(")")
 
@@ -174,7 +204,8 @@ def _run_repair(job_id: str) -> None:
             q.put({"type": "done", "size": done_size})
         else:
             jobs[job_id]["status"] = "error"
-            q.put({"type": "error", "message": "Repair failed — see log above for details."})
+            detail = f" ({last_raw})" if last_raw else ""
+            q.put({"type": "error", "message": "Couldn't process this video" + detail})
 
     except Exception as exc:
         jobs[job_id]["status"] = "error"
