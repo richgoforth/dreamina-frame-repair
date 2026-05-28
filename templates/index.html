@@ -347,6 +347,27 @@
       letter-spacing: 0.04em;
     }
 
+    .doneSummary {
+      display: flex;
+      flex-direction: column;
+      gap: 0.3rem;
+      margin: 0.25rem 0 0.25rem;
+    }
+
+    .sumItem {
+      font-size: 0.85rem;
+      color: rgba(239,228,208,0.85);
+      letter-spacing: 0.02em;
+    }
+
+    .sumItem::before {
+      content: '✓ ';
+      color: #5fba8a;
+    }
+
+    .sumNone { color: var(--muted); }
+    .sumNone::before { content: ''; }
+
     .actions {
       display: flex;
       flex-direction: column;
@@ -492,6 +513,7 @@
           </div>
           <h2 class="doneTitle">Repair complete</h2>
           <p class="doneMeta" id="doneMeta"></p>
+          <div class="doneSummary" id="doneSummary"></div>
           <div class="actions">
             <a class="btnPrimary" id="downloadBtn" href="#" download>
               Download <span class="btnIcon">↓</span>
@@ -580,6 +602,18 @@
           document.getElementById('downloadBtn').href = '/download/' + jobId;
           document.getElementById('doneMeta').textContent =
             'ProRes 422 HQ' + (msg.size ? ' · ' + msg.size : '');
+
+          // What was changed, and where it needed repairing
+          const plural = (n, w) => n + ' ' + w + (n === 1 ? '' : 's');
+          const parts = [];
+          if (msg.inserts) parts.push('Rebuilt ' + plural(msg.inserts, 'dropped frame'));
+          if (msg.removes) parts.push('Removed ' + plural(msg.removes, 'duplicate frame'));
+          if (msg.trimmed) parts.push('Trimmed the frozen ending');
+          const summary = document.getElementById('doneSummary');
+          summary.innerHTML = parts.length
+            ? parts.map(p => '<div class="sumItem">' + p + '</div>').join('')
+            : '<div class="sumItem sumNone">No frame issues found — video was already clean</div>';
+
           show('stateDone');
 
         } else if (msg.type === 'error') {

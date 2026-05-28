@@ -58,11 +58,16 @@ def _translate(line: str, state: dict) -> list[dict]:
 
     if s.startswith("[insert]") or s.startswith("[remove]"):
         state["done"] = state.get("done", 0) + 1
+        if s.startswith("[insert]"):
+            state["inserts"] = state.get("inserts", 0) + 1
+        else:
+            state["removes"] = state.get("removes", 0) + 1
         total = state.get("total", 0)
         suffix = f" — {state['done']} of {total}" if total else f" — {state['done']}"
         return [{"type": "status", "key": "repair", "text": "Repairing frames" + suffix}]
 
     if s.startswith("Trimmed"):
+        state["trimmed"] = True
         return [{"type": "status", "key": "trim", "text": "Trimming frozen ending…"}]
 
     if s.startswith("Assembling"):
@@ -168,8 +173,11 @@ def _run_repair(job_id: str) -> None:
     q   = job["queue"]
     jobs[job_id]["status"] = "running"
 
+    # -u = unbuffered stdout. Without it, repair.py's prints are block-buffered
+    # when writing to a pipe, so status updates arrive in bursts (the UI looks
+    # frozen, then jumps). Unbuffered = each line streams the instant it prints.
     cmd = [
-        sys.executable, str(REPAIR_PY),
+        sys.executable, "-u", str(REPAIR_PY),
         str(job["input"]),
         "--detect", "--auto-repair",
         "--output", str(job["output"]),
@@ -201,7 +209,13 @@ def _run_repair(job_id: str) -> None:
 
         if proc.returncode == 0 and job["output"].exists():
             jobs[job_id]["status"] = "done"
-            q.put({"type": "done", "size": done_size})
+            q.put({
+                "type":    "done",
+                "size":    done_size,
+                "inserts": state.get("inserts", 0),   # dropped frames rebuilt
+                "removes": state.get("removes", 0),   # duplicate frames removed
+                "trimmed": bool(state.get("trimmed")),
+            })
         else:
             jobs[job_id]["status"] = "error"
             detail = f" ({last_raw})" if last_raw else ""
