@@ -1,0 +1,28 @@
+{
+  "video": "/Users/richardgoforth/Downloads/hf_20260518_195929_aa62ebe0-da3e-4784-93ea-74d21df79757 (1).mp4",
+  "aspect_ratio": "2206:946",
+  "target_fps": 24,
+  "repairs": [
+    {"type": "insert", "after": 13, "note": "skipped frame between 13 and 14 (annotated)"},
+    {"type": "remove", "frame": 16, "note": "doubled frame — frames 15 and 16 identical (detected by analysis)"},
+    {"type": "insert", "after": 29, "note": "skipped frame between 29 and 30 (annotated)"},
+    {"type": "remove", "frame": 36, "note": "doubled frame — frames 35 and 36 identical (annotated)"},
+    {"type": "insert", "after": 49, "note": "skipped frame between 49 and 50 (annotated)"},
+    {"type": "remove", "frame": 64, "note": "doubled frame — frames 63 and 64 identical (detected by analysis)"},
+    {"type": "insert", "after": 69, "note": "skipped frame between 69 and 70 (annotated)"},
+    {"type": "remove", "frame": 88, "note": "doubled frame — frames 87 and 88 identical (detected by analysis)"},
+    {"type": "insert", "after": 89, "note": "skipped frame between 89 and 90 (annotated)"}
+  ],
+  "trim_to": 98,
+  "analysis_notes": {
+    "active_content_frames": "1-98",
+    "frozen_tail_frames": "99-121 (23 frames, 100% identical — Dreamina content-freeze artifact)",
+    "near_duplicate_pairs_original": [
+      {"frames": "15-16", "diff": 0.2057, "source": "analysis"},
+      {"frames": "35-36", "diff": 0.3585, "source": "annotated"},
+      {"frames": "63-64", "diff": 0.2854, "source": "analysis"},
+      {"frames": "87-88", "diff": 0.2881, "source": "analysis"}
+    ],
+    "trim_note": "After 5 inserts and 4 removes (net +1), active content ends at output frame 98. Use --trim-to 98."
+  }
+}
