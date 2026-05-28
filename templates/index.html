@@ -1,0 +1,597 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Frame Repair</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@500&family=Outfit:wght@300;400;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --primary:          #d4af37;
+      --secondary:        #224A46;
+      --secondary-dark:   #173A36;
+      --background:       #0a0a0a;
+      --card-bg:          rgba(255,255,255,0.03);
+      --foreground:       #efe4d0;
+      --muted:            #a3a3a3;
+      --border:           #2e2e2e;
+      --border-light:     rgba(243,239,231,0.1);
+      --font-heading:     'Playfair Display', Georgia, serif;
+      --font-body:        'Outfit', system-ui, sans-serif;
+      --ease:             cubic-bezier(0.22, 0.61, 0.36, 1);
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body {
+      height: 100%;
+      background: var(--background);
+      color: var(--foreground);
+      font-family: var(--font-body);
+      font-weight: 300;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+
+    /* Grain overlay */
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 512 512' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.75' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+      background-size: 720px 720px;
+      opacity: 0.045;
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    /* Ambient teal glow */
+    body::after {
+      content: '';
+      position: fixed;
+      bottom: -20%;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 60vw;
+      height: 40vh;
+      background: radial-gradient(ellipse, rgba(34,74,70,0.12) 0%, transparent 70%);
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    .page {
+      position: relative;
+      z-index: 1;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 3rem 1.5rem;
+      gap: 2.5rem;
+    }
+
+    /* ---- Header ---- */
+    .header {
+      text-align: center;
+      animation: fadeUp 0.8s var(--ease) both;
+    }
+
+    .header h1 {
+      font-family: var(--font-heading);
+      font-weight: 500;
+      font-size: clamp(2rem, 5vw, 3rem);
+      letter-spacing: -0.02em;
+      line-height: 1.15;
+      background: linear-gradient(to right, #fff8e7, #8f8f8f);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      margin-bottom: 0.6rem;
+    }
+
+    .header p {
+      color: var(--muted);
+      font-size: 0.88rem;
+      letter-spacing: 0.05em;
+    }
+
+    /* ---- Card ---- */
+    .card {
+      width: 100%;
+      max-width: 620px;
+      background: var(--card-bg);
+      border: 1px solid var(--border-light);
+      border-radius: 4px;
+      overflow: hidden;
+      backdrop-filter: blur(8px);
+      box-shadow: 0 8px 40px rgba(0,0,0,0.5), 0 0 0 0.5px rgba(255,255,255,0.04);
+      animation: fadeUp 0.8s 0.1s var(--ease) both;
+    }
+
+    /* ---- States ---- */
+    .state { display: none; }
+    .state.active { display: block; }
+
+    /* ---- Upload State ---- */
+    .dropWrap {
+      padding: 1.5rem;
+    }
+
+    .dropZone {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 3.5rem 2rem;
+      border: 1.5px dashed rgba(34,74,70,0.45);
+      border-radius: 3px;
+      cursor: pointer;
+      text-align: center;
+      gap: 0.85rem;
+      transition: border-color 0.3s var(--ease), background 0.3s var(--ease), box-shadow 0.3s var(--ease);
+    }
+
+    .dropZone:hover,
+    .dropZone.dragover {
+      border-color: var(--secondary);
+      border-style: solid;
+      background: rgba(34,74,70,0.06);
+      box-shadow: inset 0 0 30px rgba(34,74,70,0.08);
+    }
+
+    .dropIcon {
+      width: 52px;
+      height: 52px;
+      border-radius: 50%;
+      border: 1px solid rgba(34,74,70,0.5);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: rgba(34,74,70,0.9);
+      transition: all 0.3s var(--ease);
+      margin-bottom: 0.25rem;
+    }
+
+    .dropIcon svg {
+      width: 22px;
+      height: 22px;
+      stroke: currentColor;
+      fill: none;
+      stroke-width: 1.5;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    .dropZone:hover .dropIcon,
+    .dropZone.dragover .dropIcon {
+      border-color: var(--secondary);
+      background: rgba(34,74,70,0.18);
+      color: #5fba8a;
+      transform: translateY(-4px);
+    }
+
+    .dropTitle {
+      font-size: 1rem;
+      font-weight: 400;
+      color: var(--foreground);
+    }
+
+    .dropSub {
+      font-size: 0.85rem;
+      color: var(--muted);
+    }
+
+    .dropLink {
+      color: rgba(34,74,70,0.9);
+      text-decoration: underline;
+      text-underline-offset: 2px;
+      cursor: pointer;
+      transition: color 0.2s;
+    }
+
+    .dropLink:hover { color: #5fba8a; }
+
+    .dropHint {
+      font-size: 0.75rem;
+      color: rgba(163,163,163,0.5);
+      letter-spacing: 0.04em;
+    }
+
+    /* ---- Processing State ---- */
+    .logBar {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      padding: 1.1rem 1.5rem;
+      border-bottom: 1px solid var(--border-light);
+    }
+
+    .spinner {
+      width: 13px;
+      height: 13px;
+      border: 1.5px solid rgba(34,74,70,0.25);
+      border-top-color: var(--secondary);
+      border-radius: 50%;
+      animation: spin 0.75s linear infinite;
+      flex-shrink: 0;
+    }
+
+    .spinnerDone {
+      width: 13px;
+      height: 13px;
+      border-radius: 50%;
+      background: rgba(34,74,70,0.5);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      font-size: 9px;
+      color: #5fba8a;
+    }
+
+    .logBarLabel {
+      font-size: 0.8rem;
+      color: var(--muted);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      flex: 1;
+    }
+
+    .log {
+      padding: 1.1rem 1.5rem;
+      font-size: 0.78rem;
+      line-height: 1.75;
+      overflow-y: auto;
+      max-height: 400px;
+      font-family: var(--font-body);
+      font-weight: 300;
+    }
+
+    .log::-webkit-scrollbar { width: 3px; }
+    .log::-webkit-scrollbar-track { background: transparent; }
+    .log::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 2px; }
+
+    .logLine {
+      animation: lineIn 0.2s var(--ease) both;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .logLine + .logLine { margin-top: 0.05rem; }
+
+    /* Line type colours */
+    .l-divider   { color: rgba(255,255,255,0.08); }
+    .l-section   { color: var(--foreground); font-weight: 400; margin-top: 0.4rem; }
+    .l-insert    { color: #5fba8a; }
+    .l-remove    { color: var(--primary); }
+    .l-done      { color: var(--primary); font-weight: 500; }
+    .l-result    { color: rgba(239,228,208,0.75); }
+    .l-assembling{ color: var(--muted); }
+    .l-info      { color: rgba(163,163,163,0.7); }
+    .l-error     { color: #e06c75; }
+
+    /* ---- Done State ---- */
+    .doneInner {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      text-align: center;
+      padding: 3rem 2rem;
+      gap: 1.1rem;
+    }
+
+    .doneRing {
+      width: 60px;
+      height: 60px;
+      border-radius: 50%;
+      border: 1.5px solid rgba(34,74,70,0.6);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      animation: ringIn 0.5s var(--ease) both;
+    }
+
+    .doneRing svg {
+      width: 24px;
+      height: 24px;
+      stroke: #5fba8a;
+      fill: none;
+      stroke-width: 2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    .doneTitle {
+      font-family: var(--font-heading);
+      font-weight: 500;
+      font-size: 1.75rem;
+      letter-spacing: -0.02em;
+      background: linear-gradient(to right, #fff8e7, #8f8f8f);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .doneMeta {
+      font-size: 0.82rem;
+      color: var(--muted);
+      letter-spacing: 0.04em;
+    }
+
+    .actions {
+      display: flex;
+      flex-direction: column;
+      align-items: stretch;
+      gap: 0.65rem;
+      width: 100%;
+      max-width: 260px;
+      margin-top: 0.5rem;
+    }
+
+    /* ---- Buttons ---- */
+    .btnPrimary {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0.875rem 1.75rem;
+      color: var(--foreground);
+      background: rgba(0,0,0,0.5);
+      border: 1px solid rgba(255,255,255,0.1);
+      border-left: 4px solid var(--secondary);
+      border-radius: 2px;
+      font-family: var(--font-body);
+      font-weight: 500;
+      font-size: 0.88rem;
+      letter-spacing: 0.04em;
+      text-decoration: none;
+      cursor: pointer;
+      transition: transform 0.3s var(--ease), box-shadow 0.3s var(--ease), border-color 0.3s var(--ease), background 0.3s var(--ease);
+      box-shadow: 0 4px 14px rgba(0,0,0,0.25);
+    }
+
+    .btnPrimary:hover {
+      transform: translateY(-3px);
+      border-color: rgba(255,255,255,0.18);
+      border-left-color: var(--secondary);
+      box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+    }
+
+    .btnIcon {
+      margin-left: 0.55rem;
+      transition: transform 0.3s var(--ease);
+      opacity: 0.8;
+    }
+
+    .btnPrimary:hover .btnIcon { transform: translateX(4px); }
+
+    .btnSecondary {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0.75rem 1.75rem;
+      color: var(--muted);
+      background: transparent;
+      border: 1px solid rgba(243,239,231,0.08);
+      border-radius: 2px;
+      font-family: var(--font-body);
+      font-weight: 400;
+      font-size: 0.82rem;
+      letter-spacing: 0.04em;
+      cursor: pointer;
+      transition: all 0.3s var(--ease);
+    }
+
+    .btnSecondary:hover {
+      color: var(--foreground);
+      background: rgba(34,74,70,0.08);
+      border-color: rgba(34,74,70,0.35);
+      transform: translateY(-2px);
+    }
+
+    /* ---- Footer ---- */
+    .footer {
+      font-size: 0.72rem;
+      color: rgba(163,163,163,0.35);
+      letter-spacing: 0.05em;
+      text-align: center;
+      animation: fadeUp 0.8s 0.2s var(--ease) both;
+    }
+
+    /* ---- Keyframes ---- */
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(14px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    @keyframes lineIn {
+      from { opacity: 0; transform: translateX(-5px); }
+      to   { opacity: 1; transform: translateX(0); }
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    @keyframes ringIn {
+      from { opacity: 0; transform: scale(0.6); }
+      to   { opacity: 1; transform: scale(1); }
+    }
+
+    @media (max-width: 480px) {
+      .page { padding: 2rem 1rem; }
+      .dropZone { padding: 2.5rem 1.25rem; }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+
+    <header class="header">
+      <h1>Frame Repair</h1>
+      <p>Detect and fix Dreamina frame artifacts · ProRes 422 HQ output</p>
+    </header>
+
+    <div class="card">
+
+      <!-- Upload -->
+      <div class="state active" id="stateUpload">
+        <div class="dropWrap">
+          <div class="dropZone" id="dropZone">
+            <div class="dropIcon">
+              <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+            </div>
+            <p class="dropTitle">Drop your video here</p>
+            <p class="dropSub">or <span class="dropLink" id="browseLink">browse files</span></p>
+            <p class="dropHint">MP4 · MOV · AVI · Dreamina outputs</p>
+          </div>
+          <input type="file" id="fileInput" accept="video/*" style="display:none">
+        </div>
+      </div>
+
+      <!-- Processing -->
+      <div class="state" id="stateProcessing">
+        <div class="logBar">
+          <div class="spinner" id="spinner"></div>
+          <span class="logBarLabel" id="logFilename"></span>
+        </div>
+        <div class="log" id="log"></div>
+      </div>
+
+      <!-- Done -->
+      <div class="state" id="stateDone">
+        <div class="doneInner">
+          <div class="doneRing">
+            <svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
+          </div>
+          <h2 class="doneTitle">Repair complete</h2>
+          <p class="doneMeta" id="doneMeta"></p>
+          <div class="actions">
+            <a class="btnPrimary" id="downloadBtn" href="#" download>
+              Download <span class="btnIcon">↓</span>
+            </a>
+            <button class="btnSecondary" id="resetBtn">Repair another video</button>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <p class="footer">Processing happens locally — your video never leaves this machine</p>
+
+  </div>
+
+  <script>
+    // ---- State switching ----
+    const allStates = ['stateUpload', 'stateProcessing', 'stateDone'];
+    function show(id) {
+      allStates.forEach(s => {
+        document.getElementById(s).classList.toggle('active', s === id);
+      });
+    }
+
+    // ---- Upload wiring ----
+    const dropZone  = document.getElementById('dropZone');
+    const fileInput = document.getElementById('fileInput');
+
+    document.getElementById('browseLink').addEventListener('click', e => {
+      e.stopPropagation();
+      fileInput.click();
+    });
+    dropZone.addEventListener('click', () => fileInput.click());
+    fileInput.addEventListener('change', e => { if (e.target.files[0]) go(e.target.files[0]); });
+
+    dropZone.addEventListener('dragover',  e => { e.preventDefault(); dropZone.classList.add('dragover'); });
+    dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+    dropZone.addEventListener('drop', e => {
+      e.preventDefault();
+      dropZone.classList.remove('dragover');
+      if (e.dataTransfer.files[0]) go(e.dataTransfer.files[0]);
+    });
+
+    // ---- Core flow ----
+    let currentJobId = null;
+
+    async function go(file) {
+      document.getElementById('logFilename').textContent = file.name;
+      document.getElementById('log').innerHTML = '';
+      document.getElementById('spinner').style.display = '';
+      show('stateProcessing');
+
+      const form = new FormData();
+      form.append('video', file);
+
+      let jobId;
+      try {
+        const res = await fetch('/upload', { method: 'POST', body: form });
+        const data = await res.json();
+        if (data.error) throw new Error(data.error);
+        jobId = currentJobId = data.job_id;
+      } catch (err) {
+        appendLine('l-error', '✕  Upload failed: ' + err.message);
+        document.getElementById('spinner').style.display = 'none';
+        return;
+      }
+
+      const src = new EventSource('/stream/' + jobId);
+
+      src.onmessage = e => {
+        const msg = JSON.parse(e.data);
+        if (msg.type === 'ping') return;
+
+        if (msg.type === 'log') {
+          appendLine(classify(msg.text), msg.text);
+
+        } else if (msg.type === 'done') {
+          src.close();
+          document.getElementById('downloadBtn').href = '/download/' + jobId;
+          document.getElementById('doneMeta').textContent =
+            'ProRes 422 HQ' + (msg.size ? ' · ' + msg.size : '');
+          show('stateDone');
+
+        } else if (msg.type === 'error') {
+          src.close();
+          appendLine('l-error', '✕  ' + msg.message);
+          document.getElementById('spinner').style.display = 'none';
+        }
+      };
+
+      src.onerror = () => {
+        src.close();
+        appendLine('l-error', '✕  Lost connection to server.');
+        document.getElementById('spinner').style.display = 'none';
+      };
+    }
+
+    // ---- Log helpers ----
+    function classify(text) {
+      const t = text.trim();
+      if (/^─+$/.test(t))                                      return 'l-divider';
+      if (/DETECTION REPORT|FRAME SKIPS|DUPLICATE FRAMES|FROZEN TAIL/.test(t)) return 'l-section';
+      if (t.includes('[insert]'))                               return 'l-insert';
+      if (t.includes('[remove]'))                               return 'l-remove';
+      if (t.startsWith('Done.'))                                return 'l-done';
+      if (t.startsWith('→') || t.endsWith(')') && t.includes('→')) return 'l-result';
+      if (t.startsWith('Assembling'))                           return 'l-assembling';
+      return 'l-info';
+    }
+
+    function appendLine(cls, text) {
+      const log  = document.getElementById('log');
+      const line = document.createElement('div');
+      line.className = 'logLine ' + cls;
+      line.textContent = text;
+      log.appendChild(line);
+      log.scrollTop = log.scrollHeight;
+    }
+
+    // ---- Reset ----
+    document.getElementById('resetBtn').addEventListener('click', () => {
+      fileInput.value = '';
+      currentJobId = null;
+      show('stateUpload');
+    });
+  </script>
+</body>
+</html>

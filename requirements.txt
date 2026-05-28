@@ -1,10 +1,11 @@
-# Core dependencies — all typically pre-installed on macOS dev systems
+# Core dependencies
 opencv-python>=4.8.0     # DIS optical flow (primary fallback interpolation)
 Pillow>=10.0.0           # Frame I/O
 numpy>=1.24.0            # Array ops
 
-# SOTA interpolation — already present on Apple Silicon Macs
-# torch>=2.0.0           # Required by RIFE; install via pytorch.org if not present
+# Web frontend
+flask>=3.0.0             # Local web server — run with: python3 app.py
 
-# RIFE model code is auto-downloaded to ~/.video-repair/rife/ via:
-#   python repair.py --setup-rife
+# SOTA interpolation (no pip install needed)
+# rife-ncnn-vulkan binary is auto-downloaded to ~/.video-repair/rife-ncnn/ via:
+#   python3 repair.py --setup-rife
