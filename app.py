@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """
 Web frontend for dreamina-frame-repair.
-Run: python3 app.py
-Opens http://localhost:8742 automatically.
+Local:      python3 app.py  (opens browser automatically)
+Production: gunicorn handles startup via Procfile
 """
 from __future__ import annotations
 
 import json
 import os
 import queue
+import re
 import shutil
 import subprocess
 import sys
@@ -22,12 +23,25 @@ from pathlib import Path
 from flask import Flask, after_this_request, jsonify, render_template, request, Response, send_file
 
 app = Flask(__name__)
-app.config["MAX_CONTENT_LENGTH"] = 4 * 1024 * 1024 * 1024  # 4 GB
+app.config["MAX_CONTENT_LENGTH"] = 500 * 1024 * 1024  # 500 MB
 
 REPAIR_PY = Path(__file__).parent / "repair.py"
 
 # job_id -> {queue, workdir, input, output, filename, status}
 jobs: dict = {}
+
+# Lines we don't surface to the user (internal paths, spec file messages)
+_SUPPRESS = re.compile(r"Repair spec saved to:|Use --auto-repair|python repair\.py")
+
+
+def _clean(line: str) -> str | None:
+    """Return a user-facing version of a log line, or None to suppress it."""
+    if _SUPPRESS.search(line):
+        return None
+    # Strip full filesystem paths from the Done line
+    if line.strip().startswith("Done."):
+        return re.sub(r"\s+/\S+\s+", "  ", line).strip()
+    return line
 
 
 # ---------------------------------------------------------------------------
@@ -47,9 +61,9 @@ def upload():
     if not f.filename:
         return jsonify({"error": "Empty filename"}), 400
 
-    job_id  = str(uuid.uuid4())[:8]
-    workdir = Path(tempfile.mkdtemp(prefix=f"repair_{job_id}_"))
-    ext     = Path(f.filename).suffix.lower() or ".mp4"
+    job_id      = str(uuid.uuid4())[:8]
+    workdir     = Path(tempfile.mkdtemp(prefix=f"repair_{job_id}_"))
+    ext         = Path(f.filename).suffix.lower() or ".mp4"
     input_path  = workdir / f"input{ext}"
     output_path = workdir / "output.mov"
 
@@ -81,7 +95,7 @@ def stream(job_id):
             try:
                 msg = q.get(timeout=90)
             except queue.Empty:
-                yield "data: {\"type\":\"ping\"}\n\n"
+                yield 'data: {"type":"ping"}\n\n'
                 continue
             if msg is None:
                 break
@@ -115,7 +129,7 @@ def download(job_id):
 
 
 # ---------------------------------------------------------------------------
-# Repair worker  (runs repair.py as subprocess — no import coupling)
+# Repair worker
 # ---------------------------------------------------------------------------
 
 def _run_repair(job_id: str) -> None:
@@ -144,7 +158,9 @@ def _run_repair(job_id: str) -> None:
             line = raw.rstrip()
             if not line:
                 continue
-            q.put({"type": "log", "text": line})
+            clean = _clean(line)
+            if clean is not None:
+                q.put({"type": "log", "text": clean})
             if line.strip().startswith("Done.") and "(" in line:
                 done_size = line.split("(")[-1].rstrip(")")
 
@@ -155,7 +171,7 @@ def _run_repair(job_id: str) -> None:
             q.put({"type": "done", "size": done_size})
         else:
             jobs[job_id]["status"] = "error"
-            q.put({"type": "error", "message": "Repair failed — see log above."})
+            q.put({"type": "error", "message": "Repair failed — see log above for details."})
 
     except Exception as exc:
         jobs[job_id]["status"] = "error"
@@ -169,13 +185,15 @@ def _run_repair(job_id: str) -> None:
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    port = 8742
-    url  = f"http://localhost:{port}"
-    print(f"\n  dreamina-frame-repair  →  {url}\n")
+    port       = int(os.environ.get("PORT", 8742))
+    is_local   = not os.environ.get("RAILWAY_ENVIRONMENT") and port == 8742
 
-    def _open():
-        time.sleep(0.9)
-        webbrowser.open(url)
+    if is_local:
+        url = f"http://localhost:{port}"
+        print(f"\n  dreamina-frame-repair  →  {url}\n")
+        def _open():
+            time.sleep(0.9)
+            webbrowser.open(url)
+        threading.Thread(target=_open, daemon=True).start()
 
-    threading.Thread(target=_open, daemon=True).start()
-    app.run(host="127.0.0.1", port=port, threaded=True, debug=False)
+    app.run(host="0.0.0.0", port=port, threaded=True, debug=False)

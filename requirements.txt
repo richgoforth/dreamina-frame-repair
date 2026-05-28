@@ -5,6 +5,8 @@ numpy>=1.24.0            # Array ops
 
 # Web frontend
 flask>=3.0.0             # Local web server — run with: python3 app.py
+gunicorn>=21.0.0         # Production WSGI server (used by Railway)
+gevent>=23.0.0           # Async workers — required for SSE streaming with gunicorn
 
 # SOTA interpolation (no pip install needed)
 # rife-ncnn-vulkan binary is auto-downloaded to ~/.video-repair/rife-ncnn/ via:
