@@ -3,8 +3,10 @@
 video-repair: Detect and fix frame drops / duplicates in AI-generated video.
 
 Interpolation backends (priority order):
-  1. RIFE v4 via PyTorch MPS  — SOTA; set up once with --setup-rife
-  2. DIS optical flow (OpenCV) — motion-compensated warp; works immediately
+  1. RIFE via rife-ncnn-vulkan — SOTA; needs a GPU (Apple Silicon/Metal works).
+                                 Set up once with --setup-rife. CPU-only machines
+                                 fall through to DIS, which ghosts on fast motion.
+  2. DIS optical flow (OpenCV) — motion-compensated warp; works without a GPU
   3. Simple pixel blend        — last resort fallback
 
 Detection pipeline:
@@ -820,7 +822,11 @@ def apply_repairs(
     interp_dir: Path,
 ) -> list[Path]:
     interp_dir.mkdir(parents=True, exist_ok=True)
-    sorted_repairs = sorted(repairs, key=lambda r: r.frame)
+    # At the same frame number, a remove MUST run before an insert. Otherwise
+    # (insert-then-remove) the two cancel out: the freshly inserted frame gets
+    # popped and the duplicate is left in place. This happens on paired
+    # skip+duplicate glitches (e.g. dup at frame N + skip after frame N).
+    sorted_repairs = sorted(repairs, key=lambda r: (r.frame, 0 if r.type == "remove" else 1))
     result = list(frames)
     offset = 0
     interp_n = 0
@@ -905,6 +911,16 @@ def assemble_video(
             "-pix_fmt", "yuv420p",
         ]
 
+    # Does the source actually have an audio track? Many VFX/effects clips don't.
+    # Mapping 1:a unconditionally makes ffmpeg fail on silent sources.
+    has_audio = bool(
+        subprocess.run(
+            ["ffprobe", "-v", "quiet", "-select_streams", "a:0",
+             "-show_entries", "stream=index", "-of", "csv=p=0", str(audio_source)],
+            capture_output=True, text=True,
+        ).stdout.strip()
+    )
+
     with tempfile.TemporaryDirectory() as seq_dir:
         seq_path = Path(seq_dir)
         for i, src in enumerate(frame_list):
@@ -914,25 +930,24 @@ def assemble_video(
             except (OSError, NotImplementedError):
                 shutil.copy2(str(src), str(dst))
 
-        subprocess.run(
-            [
-                "ffmpeg", "-y",
-                "-framerate", fps_str,
-                "-i", str(seq_path / "%08d.png"),
-                "-i", str(audio_source),
-                "-map", "0:v", "-map", "1:a",
-                *codec_flags,
-                "-color_primaries", cp,
-                "-color_trc",       ct,
-                "-colorspace",      cs,
-                "-color_range",     cr_flag,
-                "-r", fps_str,
-                "-c:a", "copy",
-                "-shortest",
-                str(output_path),
-            ],
-            check=True, capture_output=True,
-        )
+        cmd = ["ffmpeg", "-y", "-framerate", fps_str, "-i", str(seq_path / "%08d.png")]
+        if has_audio:
+            cmd += ["-i", str(audio_source), "-map", "0:v", "-map", "1:a"]
+        else:
+            cmd += ["-map", "0:v"]
+        cmd += [
+            *codec_flags,
+            "-color_primaries", cp,
+            "-color_trc",       ct,
+            "-colorspace",      cs,
+            "-color_range",     cr_flag,
+            "-r", fps_str,
+        ]
+        if has_audio:
+            cmd += ["-c:a", "copy", "-shortest"]
+        cmd += [str(output_path)]
+
+        subprocess.run(cmd, check=True, capture_output=True)
 
 
 # ---------------------------------------------------------------------------

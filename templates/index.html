@@ -478,7 +478,11 @@
 
     </div>
 
+    {% if hosted %}
+    <p class="footer">Files are processed on the server and deleted right after download</p>
+    {% else %}
     <p class="footer">Processing happens locally — your video never leaves this machine</p>
+    {% endif %}
 
   </div>
 

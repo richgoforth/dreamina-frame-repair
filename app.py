@@ -50,7 +50,10 @@ def _clean(line: str) -> str | None:
 
 @app.route("/")
 def index():
-    return render_template("index.html")
+    # Tell the page whether it's running on a server (hosted) or on the user's
+    # own machine (local), so the privacy footer states the truth either way.
+    hosted = bool(os.environ.get("RAILWAY_ENVIRONMENT"))
+    return render_template("index.html", hosted=hosted)
 
 
 @app.route("/upload", methods=["POST"])
