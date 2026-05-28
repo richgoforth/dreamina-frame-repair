@@ -184,6 +184,48 @@ def _run_repair(job_id: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# RIFE self-test  (runs once at import — output lands in Railway deploy logs)
+# ---------------------------------------------------------------------------
+
+def _rife_selftest() -> None:
+    """
+    Interpolate two tiny frames and report which backend handled it.
+    Lets us confirm — from the deploy logs alone, without uploading a video —
+    whether RIFE works on this host or we're falling back to (ghosting) DIS.
+    """
+    try:
+        import numpy as np
+        from PIL import Image
+        import repair
+
+        if repair._rife_ncnn_binary() is None:
+            print("[startup] RIFE binary NOT found — interpolation will use DIS "
+                  "(ghosts on fast motion).", flush=True)
+            return
+
+        a = np.zeros((64, 64, 3), np.uint8); a[:, :32] = 200
+        b = np.zeros((64, 64, 3), np.uint8); b[:, 32:] = 200
+        with tempfile.TemporaryDirectory() as td:
+            pa, pb, po = (Path(td) / n for n in ("a.png", "b.png", "o.png"))
+            Image.fromarray(a).save(pa)
+            Image.fromarray(b).save(pb)
+            method = repair.interpolate_frame(pa, pb, po)
+
+        if method == "RIFE":
+            print("[startup] RIFE self-test: OK — neural interpolation active. "
+                  "Inserted frames will be clean.", flush=True)
+        else:
+            print(f"[startup] RIFE self-test: FELL BACK to '{method}'. "
+                  "Inserted frames will GHOST on fast motion. "
+                  "Check that a Vulkan device is available.", flush=True)
+    except Exception as exc:
+        print(f"[startup] RIFE self-test error: {exc}", flush=True)
+
+
+_rife_selftest()
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 

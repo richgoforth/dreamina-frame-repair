@@ -659,7 +659,6 @@ def _interpolate_rife_ncnn(
         Image.fromarray(img_a).save(str(a_p))
         Image.fromarray(img_b).save(str(b_p))
 
-        import platform
         cmd = [
             str(binary),
             "-0", str(a_p),
@@ -667,10 +666,11 @@ def _interpolate_rife_ncnn(
             "-o", str(out_file),
             "-m", _rife_ncnn_model(),
         ]
-        # CPU mode on Linux: -g -1 works correctly via native CPU path.
-        # On macOS, -g -1 routes through MoltenVK and produces frame distortion — omit it there.
-        if platform.system() == "Linux":
-            cmd += ["-g", "-1"]
+        # No -g flag → use the default Vulkan device. On macOS that's the Metal
+        # GPU (MoltenVK); on a GPU-less Linux server it's the lavapipe software
+        # Vulkan device from mesa-vulkan-drivers — same compute shaders, run on
+        # CPU (slower but clean). We deliberately avoid `-g -1` (native CPU path),
+        # which produces rotated/tiled frame distortion.
         r = subprocess.run(cmd, capture_output=True)
         if r.returncode != 0:
             if _rife_ok is None:

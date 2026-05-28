@@ -1,6 +1,8 @@
 FROM python:3.12-slim
 
-# System deps: OpenCV, FFmpeg, Vulkan software renderer (for RIFE CPU mode)
+# System deps: OpenCV, FFmpeg, and a software Vulkan device (lavapipe, from
+# mesa-vulkan-drivers) so RIFE's GPU compute shaders can run on the CPU.
+# vulkan-tools provides `vulkaninfo` for debugging device detection.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     libglib2.0-0 \
@@ -10,6 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxrender-dev \
     libvulkan1 \
     mesa-vulkan-drivers \
+    vulkan-tools \
     curl \
     unzip \
     && rm -rf /var/lib/apt/lists/*
