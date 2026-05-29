@@ -13,6 +13,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libvulkan1 \
     mesa-vulkan-drivers \
     vulkan-tools \
+    libgomp1 \
     curl \
     unzip \
     && rm -rf /var/lib/apt/lists/*
