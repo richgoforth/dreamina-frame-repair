@@ -89,52 +89,6 @@ def index():
     return render_template("index.html", hosted=hosted)
 
 
-@app.route("/diag")
-def diag():
-    """
-    Plain-text diagnostics for RIFE-on-server debugging, readable over HTTP.
-    Reports: binary presence, its shared-lib deps (ldd), Vulkan devices
-    (vulkaninfo), and a real test interpolation with full stdout/stderr.
-    """
-    import numpy as np
-    from PIL import Image
-    import repair
-
-    out = []
-    binary = repair._rife_ncnn_binary()
-    out.append(f"rife binary: {binary}")
-
-    if binary:
-        try:
-            r = subprocess.run(["ldd", str(binary)], capture_output=True, text=True, timeout=20)
-            out.append("=== ldd (missing libs show as 'not found') ===\n" + r.stdout + r.stderr)
-        except Exception as e:
-            out.append(f"ldd error: {e}")
-
-    try:
-        r = subprocess.run(["vulkaninfo", "--summary"], capture_output=True, text=True, timeout=30)
-        out.append("=== vulkaninfo --summary ===\n" + (r.stdout[:2500] or "(empty stdout)") + "\n--stderr--\n" + r.stderr[:800])
-    except Exception as e:
-        out.append(f"vulkaninfo error: {e}")
-
-    try:
-        a = np.zeros((64, 64, 3), np.uint8); a[:, :32] = 200
-        b = np.zeros((64, 64, 3), np.uint8); b[:, 32:] = 200
-        with tempfile.TemporaryDirectory() as td:
-            pa, pb, po = (Path(td) / n for n in ("a.png", "b.png", "o.png"))
-            Image.fromarray(a).save(pa); Image.fromarray(b).save(pb)
-            if binary:
-                cmd = [str(binary), "-0", str(pa), "-1", str(pb),
-                       "-o", str(po), "-m", repair._rife_ncnn_model()]
-                r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-                out.append(f"=== rife test run  rc={r.returncode}  output_exists={po.exists()} ===\n"
-                           f"STDOUT:\n{r.stdout}\nSTDERR:\n{r.stderr}")
-    except Exception as e:
-        out.append(f"rife test error: {e}")
-
-    return Response("\n\n".join(out), mimetype="text/plain")
-
-
 @app.route("/upload", methods=["POST"])
 def upload():
     if "video" not in request.files:
